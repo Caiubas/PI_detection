@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 
 import numpy as np
 from bleak import BleakScanner, BleakClient
@@ -9,13 +10,14 @@ import time
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from bejaSensor import BejaSensor
 from movella_dot_py.core.sensor import MovellaDOTSensor
 from movella_dot_py.models.data_structures import SensorConfiguration
 from movella_dot_py.models.enums import OutputRate, FilterProfile, PayloadMode
 
 import pandas as pd
 
-async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
+async def record_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
     # Scan for sensors
     print("Scanning for Movella DOT sensors (5 seconds)...")
     devices = await BleakScanner.discover(timeout=5.0)
@@ -41,7 +43,7 @@ async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
     # Connect and configure all sensors
     for device in dot_devices:
         try:
-            sensor = MovellaDOTSensor(config)
+            sensor = BejaSensor(config)
             sensor.client = BleakClient(device.address)
             print(f"\nConnecting to {device.name} ({device.address})...")
             await sensor.client.connect()
@@ -80,6 +82,18 @@ async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
 
     try:
         # Start measurement on all sensors
+        print("\nStarting calibration on all sensors...")
+        await asyncio.gather(*(sensor.calibrate() for sensor in sensors))
+
+        while not all([sensor.calibrated for sensor in sensors]):
+            await asyncio.sleep(1)
+            print("calibrating")
+
+        print("Finished_calibration")
+
+        await asyncio.sleep(2)
+        await asyncio.gather(*(sensor.stop_measurement() for sensor in sensors))
+
         print("\nStarting measurements on all sensors...")
         await asyncio.gather(*(sensor.start_measurement() for sensor in sensors))
 
@@ -148,6 +162,11 @@ async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    asyncio.run(collect_data(10)).to_csv("collected_data.csv")
+    data = asyncio.run(record_data(10))
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"../data/data_{timestamp}.csv"
+
+    data.to_csv(filename, index=False)
+    print(f"Arquivo salvo com sucesso: {filename}")
 
 
