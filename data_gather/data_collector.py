@@ -1,4 +1,6 @@
 import asyncio
+
+import numpy as np
 from bleak import BleakScanner, BleakClient
 import sys
 import os
@@ -31,7 +33,7 @@ async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
     sensors = []
     # Change to your desired values.
     config = SensorConfiguration(
-        output_rate=OutputRate.RATE_1,
+        output_rate=OutputRate.RATE_60,
         filter_profile=FilterProfile.DYNAMIC,
         payload_mode=PayloadMode.CUSTOM_MODE_5
     )
@@ -81,8 +83,8 @@ async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
         print("\nStarting measurements on all sensors...")
         await asyncio.gather(*(sensor.start_measurement() for sensor in sensors))
 
-        print("\nCollecting data for 5 seconds...")
-        await asyncio.sleep(5)
+        print(f"\nCollecting data for {seconds} seconds...")
+        await asyncio.sleep(seconds)
 
         # Stop measurement on all sensors
         print("\nStopping measurements...")
@@ -97,22 +99,41 @@ async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
         print("\nStopping recordings...")
         await asyncio.gather(*(sensor.stop_recording() for sensor in sensors))
 
+        all_data = pd.DataFrame()
+
         # Print collected data summary for each sensor
         for i, sensor in enumerate(sensors):
             print(f"\nSensor Data Summary:")
             data = sensor.get_collected_data()
+            data.pop("euler_angles", None)
+            device_info = await sensor.get_device_info()
+            device_tag = device_info.device_tag
+            mac_address = device_info.mac_address
+            data["device_tag"] = [device_tag for _ in range(len(data["timestamps"]))]
+            data["mac_address"] = [mac_address for _ in range(len(data["timestamps"]))]
+            flat = {}
+            for k, v in data.items():
+                arr = np.array(v)
+                if arr.ndim == 0:
+                    flat[k] = np.array([arr])
+                elif arr.ndim == 1:
+                    flat[k] = arr
+                else:
+                    for i in range(arr.shape[1]):
+                        flat[f"{k}_{i}"] = arr[:, i]
+            flat["timestamps"] = [v - flat["timestamps"][0] for v in flat["timestamps"]]
+            if all_data.empty:
+                all_data = pd.DataFrame(flat)
+            else:
+                all_data = pd.concat([all_data, pd.DataFrame(flat)])
             if data:
                 print(f"Device: {data['device_tag']}")
                 print(f"MAC Address: {data['mac_address']}")
                 timestamps = data['timestamps']
-                euler_angles = data['euler_angles']
 
                 if len(timestamps) > 0:
                     print(f"Collected {len(timestamps)} samples")
                     print(f"Time span: {(timestamps[-1] - timestamps[0]) / 1e6:.2f} seconds")
-                    if len(euler_angles) > 0:
-                        print(f"First euler angles: {euler_angles[0]}")
-                        print(f"Last euler angles: {euler_angles[-1]}")
                 else:
                     print("No data was collected")
 
@@ -122,9 +143,11 @@ async def collect_data(seconds: int = 0, max_sensors: int = 5) -> pd.DataFrame:
         # Disconnect all sensors
         print("\nDisconnecting all sensors...")
         await asyncio.gather(*(sensor.disconnect() for sensor in sensors))
-        return pd.DataFrame(data)
+        all_data = all_data.sort_values(by=["timestamps"], ascending=True)
+        return all_data
 
 
 if __name__ == "__main__":
     asyncio.run(collect_data(10)).to_csv("collected_data.csv")
+
 
